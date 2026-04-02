@@ -1,5 +1,5 @@
 ---
-title: "Step 1: Project 1"
+title: "Project 1: Step 1"
 format: html
 editor: visual
 ---
