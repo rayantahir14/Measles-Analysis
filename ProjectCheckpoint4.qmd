@@ -1,0 +1,289 @@
+---
+title: "Project 1 Checkpoint 4"
+author: "Rayan Tahir"
+format: html
+execute: 
+  warning: false
+  message: false
+embed-resources: true
+code-fold: true
+theme: superhero
+---
+## API Data from Checkpoint 3
+
+# Source 1:
+
+We are utilizing REST count
+
+Importing data and libraries
+
+```{r}
+library(httr)
+library(tidyjson)
+library(jsonlite)
+library(tidyverse)
+library(glue)
+library(countrycode)
+library(ggplot2)
+library(knitr)
+
+tuesdata <- tidytuesdayR::tt_load('2021-01-26')
+tuesdata <- tidytuesdayR::tt_load(2021, week = 5)
+plastics <- tuesdata$plastics
+```
+
+Grabbing regions from the API and mapping them to preset labels
+
+```{r}
+#| output: false
+get_region <- function(region) {
+  url <- glue(
+    "https://restcountries.com/v3.1/region/{region}?fields=name,population,region"
+    )
+
+  res <- GET(url)
+  stop_for_status(res)
+
+  txt <- content(res, as = "text", encoding = "UTF-8")
+  df <- fromJSON(txt, flatten = TRUE)
+
+  as_tibble(df) %>%
+    transmute(
+      country_api = coalesce(name.common, name.official),
+      region = region,
+      population = population
+    )
+}
+
+region_list <- c(
+  "africa",
+  "americas", 
+  "asia", 
+  "europe", 
+  "oceania"
+  )
+
+country_region_lookup <- map_dfr(region_list, get_region) %>%
+  distinct() %>%
+  filter(!is.na(country_api))
+
+country_region_lookup
+```
+
+Cleaning up data
+
+```{r}
+#| output: false
+plastic_data_clean <- plastics %>%
+  mutate(
+    country_clean = str_squish(country),
+    country_clean = recode(
+      country_clean,
+      "USA" = "United States",
+      "US" = "United States",
+      "UK" = "United Kingdom",
+      "Czech Republic" = "Czechia",
+      "Republic of the Congo" = "Congo",
+      "Democratic Republic of the Congo" = "DR Congo",
+      .default = country_clean
+    )
+  )
+
+lookup_clean <- country_region_lookup %>%
+  mutate(
+    country_clean = str_squish(country_api)
+  )
+
+plastic_with_region <- plastic_data_clean %>%
+  left_join(
+    lookup_clean %>% select(country_clean, region, population),
+    by = "country_clean"
+  )
+
+unmatched_countries <- plastic_with_region %>%
+  filter(is.na(region)) %>%
+  distinct(country, country_clean)
+```
+
+Creating the table
+
+```{r}
+plastic_by_region <- plastic_with_region %>%
+  filter(!is.na(region)) %>%
+  group_by(region) %>%
+  summarise(
+    total_plastic = sum(grand_total, na.rm = TRUE),
+    countries_included = n_distinct(country),
+    total_population = sum(population, na.rm = TRUE),
+    plastic_per_capita = total_plastic / total_population,
+    .groups = "drop"
+  ) %>%
+  arrange(
+    desc(
+      total_plastic
+      )
+    )
+
+print(plastic_by_region)
+```
+
+# Source #2: 
+
+We are choosing to utilize API-Ninjas API to gather country GDP and determine whether there is a pattern between a countries GDP and their total number of volunteers.
+
+```{r}
+#| output: false
+my_key = "ZctlRpoKTYWFFBkaNxfmEjLNfDBmQFAlFxgZFWrr"
+get_GDP <- function (country, key = my_key) {
+  
+  url <- glue(
+    "https://api.api-ninjas.com/v1/gdp?country={country}&year=;X-Api-Key={my_key}"
+    )
+  my_data <- safely(fromJSON)(url)
+  if (is.null(my_data$result)) {
+    return(NA)
+  } else {
+    return(my_data$result)
+  }
+}
+countries <-unique(plastics$country)
+results <- map(
+  .x = countries,
+  .f = get_GDP
+  )
+```
+
+Finding missing countries in the API and using manual mapping of 2-letter country codes.
+
+```{r}
+#| output: false
+bad_countries <- countries[map_lgl(results, ~ length(.x) == 0 || (length(.x) == 1 && is.na(.x)))]
+
+bad_country_code <- c(
+  "BF",  
+  "CI", 
+  "HK",  
+  "ZA",
+  "LK",
+  "TW",
+  "AE",
+  "GB",
+  "US",
+  "SV",
+  "KR",
+  "GB"
+)
+
+results_2 <- map(
+  .x = bad_country_code, 
+  .f = get_GDP
+  )
+
+mod_df <- plastics[!(plastics$country %in% bad_countries), ]
+unique(plastics$country)
+
+results <- map(
+  .x = unique(mod_df$country), 
+  .f = get_GDP
+  )
+
+total_results <- bind_rows(
+  results, 
+  results_2
+  )
+
+tr_2019 <- total_results[total_results$year %in% c(2019), ]
+```
+
+## Start of Checkpoint 4
+
+## How does a country's GDP status (low, medium, high) relate to its dominant plastic use type?
+
+# Preliminary Context
+
+For this research question, our analysis is limited to countries included in the TidyTuesday plastic dataset with data from 2019, which means that not all counties are represented, meaning that our findings are not globally applicable. This question brings us insight to see the trends amongst higher and lower income countries and their plastic usage. Prior to the results, we came to the initial hypothesis that we would expect to see a statistically significant relationship because we would expect a lot more PET, PP, and HDPE types of plastic in high GDP countries as there is a high consumption of packaged good and well-oriented logistics systems that focus on consumer-based plastics. For lower GDP countries, we would expect to see more PVC and LDPE types of plastic, because there would reasonably be more infrastructure development and lower focus on frequent packaged goods and deliveries, and more on utility based plastics (like PVC and LDPE). We would expect a solid mix of both of these plastic types for the middle GDP countries.
+
+## **Visualization: Tile Plot**
+```{r}
+#| code-fold: false
+find_max <- function(x) {
+  names(x)[x == max(x, na.rm = TRUE)][1] 
+}
+
+plastic_cols <- 
+    c(
+    "hdpe", 
+    "ldpe", 
+    "o", 
+    "pet", 
+    "pp", 
+    "ps", 
+    "pvc")
+
+dominant_df <- plastics |>
+  filter(year == 2019) |>
+  group_by(country) |>
+  summarize(across(all_of(plastic_cols), 
+                   sum, 
+                   na.rm = TRUE), 
+                   .groups = "drop") |>
+  mutate(
+  dominant_type = apply(across(all_of(plastic_cols)), 1, find_max),
+  iso = countrycode(country, "country.name", "iso3c")
+)
+
+tr_2019_small <- tr_2019 |>
+  select(1, gdp_per_capita_nominal) |>
+  rename(iso = 1) |>
+  distinct(iso, .keep_all = TRUE)
+
+dominant_gdp <- dominant_df |>
+  inner_join(
+  tr_2019_small,
+  by = "iso"
+)|>
+  mutate(
+    gdp_group = case_when(
+      gdp_per_capita_nominal < 1200 ~ "Low",
+      gdp_per_capita_nominal < 14000 ~ "Middle",
+      TRUE ~ "High"
+    )
+  )
+tile_data <- dominant_gdp |>
+  count(gdp_group, dominant_type)
+
+ggplot(tile_data, aes(x = dominant_type, y = gdp_group, fill = n)) +
+  geom_tile(color = "lightgrey") +
+  scale_fill_distiller(palette = "Blues", direction = 1) +
+  labs(
+    title = "Dominant Plastic Type by GDP Group (2019)",
+    subtitle = "Number of countries in each category",
+    x = "Plastic Type",
+    y = "GDP Group",
+    fill = "Count of Countries",
+    caption = "Source: TidyTuesday plastics dataset + API Ninjas GDP",
+    alt = "Tile chart showing Dominant Plastic Type by GDP Group (2019) with density representing number of countries in each category. No correlation found."
+  ) +
+  theme_classic(base_size = 13)
+```
+
+## Chi-Square Test of Independence
+```{r}
+#| code-fold: false
+table_data <- table(dominant_gdp$gdp_group, dominant_gdp$dominant_type)
+
+chisq.test(table_data)
+
+kable(
+  table_data,
+  caption = "Contingency Table of GDP Group and Dominant Plastic Type (2019)"
+)
+```
+## Interpretation
+H₀: There is no association between a country's GDP group and its dominant plastic type
+
+Hₐ: There is an association between a country's GDP group and its dominant plastic type.
+
+The chi-square test of independence was done to examine the relationship between GDP group and dominant plastic type by country. The results were not statistically significant, meaning that fail to reject the null hypothesis, where chi-square = 13.20 and the p-value = 0.213, suggesting no significant evidence of an association. 
+
+These results went against our initial thinking and hypothesis and challenges our expectation that a particular country would have a predominant type of plastic waste when considering GDP status in a similar way we did in this project.
